@@ -85,7 +85,10 @@ pub fn current_target_app() -> Option<ForegroundApp> {
 
 pub fn register_main_window(window: &Window) {
     if let Some(hwnd) = window_hwnd(window) {
-        MAIN_WINDOW.store(hwnd, Ordering::Relaxed);
+        let prev = MAIN_WINDOW.swap(hwnd, Ordering::Relaxed);
+        if prev != hwnd {
+            super::mark_window_shown();
+        }
     }
 }
 
@@ -101,6 +104,7 @@ pub fn hide_window(window: &Window) {
     let Some(hwnd) = window_hwnd(window) else {
         return;
     };
+    super::mark_window_hidden();
     // SAFETY: hwnd 来自当前 GPUI 窗口，ShowWindowAsync 只修改该窗口的显示状态。
     unsafe {
         let _ = ShowWindowAsync(HWND(hwnd as *mut c_void), SW_HIDE);
@@ -113,6 +117,7 @@ pub fn hide_main_window() {
     if hwnd == 0 {
         return;
     }
+    super::mark_window_hidden();
     // SAFETY: hwnd 是本进程记录的窗口句柄。
     unsafe {
         let _ = ShowWindowAsync(HWND(hwnd as *mut c_void), SW_HIDE);
@@ -125,6 +130,7 @@ pub fn show_main_window(position_on_cursor_screen: bool) {
     if hwnd == 0 {
         return;
     }
+    super::mark_window_shown();
     let handle = HWND(hwnd as *mut c_void);
     if position_on_cursor_screen {
         center_window_on_cursor_monitor(handle);

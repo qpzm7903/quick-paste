@@ -116,7 +116,7 @@ jobs:
 
   build-macos:
     name: 🍎 构建 macOS (${{ matrix.arch }})
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false

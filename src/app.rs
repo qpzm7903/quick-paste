@@ -136,6 +136,12 @@ pub struct TrayHolder(pub TrayController);
 
 impl Global for TrayHolder {}
 
+pub struct MainWindowHolder {
+    pub view: Entity<QuickPasteApp>,
+}
+
+impl Global for MainWindowHolder {}
+
 pub fn apply_theme(pref: ThemePreference, appearance: WindowAppearance, cx: &mut App) {
     let mode = match pref {
         ThemePreference::System => match appearance {
@@ -193,46 +199,60 @@ pub fn run() {
         monitor_paused,
     };
 
-    gpui_kit::application()
-        .with_assets(gpui_kit::assets::AllAssets)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            cx.set_global(InstanceGuard(instance));
+    let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
+    application.on_reopen(|cx| {
+        if let Some(view) = cx
+            .try_global::<MainWindowHolder>()
+            .map(|holder| holder.view.clone())
+        {
+            view.update(cx, |view, cx| view.on_show_request(cx));
+        }
+    });
 
-            let (hotkey_holder, hotkey_receiver) = install_hotkey(&cfg.hotkey);
-            let hotkey_status = hotkey_holder.status.clone();
-            cx.set_global(hotkey_holder);
+    application.run(move |cx| {
+        gpui_kit::init(cx);
+        cx.set_global(InstanceGuard(instance));
 
-            let tray_receiver = match TrayController::create() {
-                Ok((tray, receiver)) => {
-                    cx.set_global(TrayHolder(tray));
-                    platform::set_accessory_activation_policy(true);
-                    Some(receiver)
-                }
-                Err(error) => {
-                    append_log(&paths.crash_log, &format!("托盘初始化失败：{error}"));
-                    None
-                }
-            };
+        let (hotkey_holder, hotkey_receiver) = install_hotkey(&cfg.hotkey);
+        let hotkey_status = hotkey_holder.status.clone();
+        cx.set_global(hotkey_holder);
 
-            let options = window_options(cx);
-            let (_, view) = gpui_kit::open_window(options, cx, |window, cx| {
-                apply_theme(cfg.theme, window.appearance(), cx);
-                cx.new(|cx| QuickPasteApp::new(window, cx, state.clone(), hotkey_status.clone()))
-            })
-            .unwrap_or_else(|error| panic!("无法创建主窗口：{error}"));
-
-            memory_trim::schedule_startup_cleanup();
-            spawn_hotkey_task(cx, view.clone(), hotkey_receiver);
-            spawn_activation_task(cx, view.clone(), activation_receiver);
-            spawn_clipboard_task(cx, view.clone(), clipboard_receiver);
-            if let Some(tray_rx) = tray_receiver {
-                spawn_tray_task(cx, view.clone(), tray_rx);
+        let tray_receiver = match TrayController::create() {
+            Ok((tray, receiver)) => {
+                cx.set_global(TrayHolder(tray));
+                platform::set_accessory_activation_policy(true);
+                Some(receiver)
             }
-            if let Some(watcher_rx) = watcher_receiver {
-                spawn_watcher_task(cx, view, watcher_rx);
+            Err(error) => {
+                append_log(&paths.crash_log, &format!("托盘初始化失败：{error}"));
+                None
             }
-        });
+        };
+
+        let options = window_options(cx);
+        let (window_handle, view) = gpui_kit::open_window(options, cx, |window, cx| {
+            apply_theme(cfg.theme, window.appearance(), cx);
+            cx.new(|cx| QuickPasteApp::new(window, cx, state.clone(), hotkey_status.clone()))
+        })
+        .unwrap_or_else(|error| panic!("无法创建主窗口：{error}"));
+
+        cx.set_global(MainWindowHolder { view: view.clone() });
+
+        memory_trim::schedule_startup_cleanup();
+        spawn_hotkey_task(cx, view.clone(), hotkey_receiver);
+        spawn_activation_task(cx, view.clone(), activation_receiver);
+        spawn_clipboard_task(cx, view.clone(), clipboard_receiver);
+        if let Some(tray_rx) = tray_receiver {
+            spawn_tray_task(cx, view.clone(), tray_rx);
+        }
+        if let Some(watcher_rx) = watcher_receiver {
+            spawn_watcher_task(cx, view, watcher_rx);
+        }
+
+        platform::show_main_window(cfg.position_on_cursor_screen);
+        cx.activate(true);
+        let _ = window_handle.update(cx, |_, window, _| window.activate_window());
+    });
 }
 
 fn window_options(cx: &mut App) -> WindowOptions {

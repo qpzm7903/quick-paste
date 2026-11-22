@@ -116,10 +116,11 @@ pub fn register_main_window(window: &Window) {
     let ptr = (&*ns_window as *const NSWindow) as usize;
     let prev = MAIN_WINDOW.swap(ptr, Ordering::Relaxed);
     if prev != ptr {
+        super::mark_window_shown();
         ns_window.setLevel(NSFloatingWindowLevel);
+        // CanJoinAllSpaces 与 MoveToActiveSpace 互斥，同时设置会触发 AppKit NSInvalidArgumentException。
         ns_window.setCollectionBehavior(
             NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::MoveToActiveSpace
                 | NSWindowCollectionBehavior::FullScreenAuxiliary,
         );
     }
@@ -152,6 +153,7 @@ pub fn hide_window(window: &Window) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
+    super::mark_window_hidden();
     if let Some(ns_window) = extract_ns_window(window) {
         ns_window.orderOut(None);
     }
@@ -162,6 +164,7 @@ pub fn hide_main_window() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
+    super::mark_window_hidden();
     if let Some(ns_window) = main_ns_window(mtm) {
         ns_window.orderOut(None);
     }
@@ -172,6 +175,7 @@ pub fn show_main_window(position_on_cursor_screen: bool) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
+    super::mark_window_shown();
     let _ = poll_frontmost_app();
 
     let Some(ns_window) = main_ns_window(mtm) else {
@@ -183,9 +187,14 @@ pub fn show_main_window(position_on_cursor_screen: bool) {
     }
 
     let app = NSApplication::sharedApplication(mtm);
+    app.unhide(None);
     app.activate();
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
+    if let Some(view) = ns_window.contentView() {
+        view.setNeedsDisplay(true);
+    }
+    ns_window.orderFrontRegardless();
     ns_window.makeKeyAndOrderFront(None);
 }
 
@@ -208,8 +217,10 @@ fn center_window_on_cursor_screen(mtm: MainThreadMarker, ns_window: &NSWindow) {
 
     let visible = screen.visibleFrame();
     let win_frame = ns_window.frame();
-    let x = visible.origin.x + (visible.size.width - win_frame.size.width) * 0.5;
-    let y = visible.origin.y + (visible.size.height - win_frame.size.height) * 0.5;
+    let x = (visible.origin.x + (visible.size.width - win_frame.size.width) * 0.5)
+        .max(visible.origin.x);
+    let y = (visible.origin.y + (visible.size.height - win_frame.size.height) * 0.5)
+        .max(visible.origin.y);
     ns_window.setFrameOrigin(NSPoint::new(x, y));
 }
 

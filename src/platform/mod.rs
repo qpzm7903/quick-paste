@@ -1,6 +1,39 @@
 //! 跨平台窗口控制、前台应用跟踪、粘贴模拟、隐私剪贴板检测与权限检查。
 
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
 use gpui_kit::Window;
+
+static LAST_SHOW_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_HIDE_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub(crate) fn mark_window_shown() {
+    LAST_SHOW_MS.store(now_millis(), Ordering::Relaxed);
+}
+
+pub(crate) fn mark_window_hidden() {
+    LAST_HIDE_MS.store(now_millis(), Ordering::Relaxed);
+}
+
+pub fn recently_shown(within: Duration) -> bool {
+    let last = LAST_SHOW_MS.load(Ordering::Relaxed);
+    last > 0 && now_millis().saturating_sub(last) <= within.as_millis() as u64
+}
+
+pub fn recently_hidden(within: Duration) -> bool {
+    let last = LAST_HIDE_MS.load(Ordering::Relaxed);
+    last > 0 && now_millis().saturating_sub(last) <= within.as_millis() as u64
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundApp {

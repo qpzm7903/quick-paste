@@ -2,11 +2,9 @@
 
 use async_channel::Receiver;
 use tray_icon::{
-    Icon, TrayIcon, TrayIconBuilder,
+    Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
 };
-#[cfg(not(target_os = "macos"))]
-use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
@@ -48,11 +46,15 @@ impl TrayController {
         let icon = build_clipboard_icon()?;
         let mut builder = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
+            .with_menu_on_right_click(true)
             .with_tooltip("QuickPaste · 快速粘贴");
 
         #[cfg(target_os = "macos")]
         {
-            builder = builder.with_icon_templated(icon);
+            builder = builder
+                .with_icon_templated(icon)
+                .with_autosave_name("com.g-ai-002.quick-paste.tray");
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -79,24 +81,17 @@ impl TrayController {
             }
         }));
 
-        #[cfg(not(target_os = "macos"))]
-        {
-            let click_sender = sender;
-            TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
-                if let TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                } = event
-                {
-                    let _ = click_sender.try_send(TrayAction::ToggleWindow);
-                }
-            }));
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let _ = tray_icon::TrayIconEvent::receiver();
-        }
+        let click_sender = sender;
+        TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let _ = click_sender.try_send(TrayAction::ToggleWindow);
+            }
+        }));
 
         Ok((
             Self {
@@ -128,17 +123,18 @@ impl TrayController {
     }
 }
 
-/// 纯 Rust 生成高清 32×32 RGBA 剪贴板图标。
-/// macOS 使用纯黑模板像素以自适应深浅菜单栏，其他平台使用蓝色渐变主色。
+/// 纯 Rust 生成高清 Retina RGBA 剪贴板图标。
+/// macOS 以 44×44 (@2x 22pt) 纯黑模板像素渲染，其他平台使用 32×32 蓝色渐变主色。
 fn build_clipboard_icon() -> Result<Icon, String> {
-    const SIZE: u32 = 32;
+    const SIZE: u32 = if cfg!(target_os = "macos") { 44 } else { 32 };
+    let scale = SIZE as f32 / 32.0;
     let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
     let monochrome = cfg!(target_os = "macos");
 
     for y in 0..SIZE {
         for x in 0..SIZE {
-            let fx = x as f32 + 0.5;
-            let fy = y as f32 + 0.5;
+            let fx = (x as f32 + 0.5) / scale;
+            let fy = (y as f32 + 0.5) / scale;
 
             // 外框：剪贴板主体 (x: 6..26, y: 6..29, radius 3.2)
             let body_outer = rounded_rect_sdf(fx, fy, 6.0, 6.5, 26.0, 29.0, 3.2);

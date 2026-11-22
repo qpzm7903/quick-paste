@@ -229,7 +229,11 @@ impl QuickPasteApp {
         });
 
         let activation_sub = cx.observe_window_activation(window, |this, window, _cx| {
-            if !window.is_window_active() && this.config.hide_on_blur && this.overlay.is_none() {
+            if !window.is_window_active()
+                && this.config.hide_on_blur
+                && this.overlay.is_none()
+                && !platform::recently_shown(Duration::from_millis(350))
+            {
                 platform::hide_window(window);
             }
         });
@@ -306,6 +310,7 @@ impl QuickPasteApp {
 
     pub fn on_show_request(&mut self, cx: &mut Context<Self>) {
         platform::show_main_window(self.config.position_on_cursor_screen);
+        cx.activate(true);
         self.selected_index = 0;
         self.pending_focus_search = true;
         self.reload_memos(cx);
@@ -361,7 +366,14 @@ impl QuickPasteApp {
 
     pub fn on_tray_action(&mut self, action: crate::tray::TrayAction, cx: &mut Context<Self>) {
         match action {
-            crate::tray::TrayAction::ToggleWindow => self.on_hotkey(cx),
+            crate::tray::TrayAction::ToggleWindow => {
+                if !platform::is_main_window_foreground()
+                    && platform::recently_hidden(Duration::from_millis(300))
+                {
+                    return;
+                }
+                self.on_hotkey(cx);
+            }
             crate::tray::TrayAction::TogglePause => self.toggle_pause(cx),
             crate::tray::TrayAction::NewSnippet => {
                 self.pending_overlay = Some(PendingOverlay::NewSnippet);
