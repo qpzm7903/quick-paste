@@ -5,8 +5,8 @@
 use std::time::Instant;
 
 use gpui_kit::{
-    component::VirtualListScrollHandle, IsZero as _, Pixels, Point, ScrollEvent, TouchPhase, Window,
-    px,
+    IsZero as _, Pixels, Point, ScrollEvent, ScrollStrategy, TouchPhase, Window,
+    component::VirtualListScrollHandle, px,
 };
 
 const SMOOTHING_SECONDS: f32 = 0.11;
@@ -23,20 +23,11 @@ struct ScrollAnimation {
     last_frame_at: Instant,
 }
 
+#[derive(Default)]
 pub(crate) struct SmoothScroll {
     animation: Option<ScrollAnimation>,
     frame_scheduled: bool,
     touch_gesture_active: bool,
-}
-
-impl Default for SmoothScroll {
-    fn default() -> Self {
-        Self {
-            animation: None,
-            frame_scheduled: false,
-            touch_gesture_active: false,
-        }
-    }
 }
 
 impl SmoothScroll {
@@ -47,6 +38,15 @@ impl SmoothScroll {
 
     pub(crate) fn is_active(&self) -> bool {
         self.animation.is_some() || self.touch_gesture_active
+    }
+
+    pub(crate) fn ensure_item_visible(
+        &mut self,
+        scroll_handle: &VirtualListScrollHandle,
+        index: usize,
+    ) {
+        self.reset();
+        scroll_handle.scroll_to_item(index, ScrollStrategy::Nearest);
     }
 
     pub(crate) fn handle_wheel(
@@ -100,9 +100,10 @@ impl SmoothScroll {
             });
             self.schedule_next_frame(window);
         } else {
-            scroll_handle
-                .as_ref()
-                .set_offset(Point { x: current_offset.x, y: target });
+            scroll_handle.as_ref().set_offset(Point {
+                x: current_offset.x,
+                y: target,
+            });
             self.animation = None;
         }
 
@@ -131,18 +132,20 @@ impl SmoothScroll {
         animation.last_frame_at = now;
         let distance = animation.target - current;
         if distance.abs() <= px(SETTLE_DISTANCE) {
-            scroll_handle
-                .as_ref()
-                .set_offset(Point { x: current_offset.x, y: animation.target });
+            scroll_handle.as_ref().set_offset(Point {
+                x: current_offset.x,
+                y: animation.target,
+            });
             return;
         }
 
         let progress = 1.0 - (-elapsed / SMOOTHING_SECONDS).exp();
         let offset = current + distance * progress;
         animation.last_offset = offset;
-        scroll_handle
-            .as_ref()
-            .set_offset(Point { x: current_offset.x, y: offset });
+        scroll_handle.as_ref().set_offset(Point {
+            x: current_offset.x,
+            y: offset,
+        });
         self.animation = Some(animation);
         self.schedule_next_frame(window);
     }

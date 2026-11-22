@@ -50,14 +50,16 @@ impl SingleInstance {
 
         thread::Builder::new()
             .name("quick-paste-activation".to_owned())
-            .spawn(move || loop {
-                if path.exists() {
-                    let _ = fs::remove_file(&path);
-                    if sender.try_send(()).is_err() {
-                        return;
+            .spawn(move || {
+                loop {
+                    if path.exists() {
+                        let _ = fs::remove_file(&path);
+                        if sender.try_send(()).is_err() {
+                            return;
+                        }
                     }
+                    thread::sleep(Duration::from_millis(250));
                 }
-                thread::sleep(Duration::from_millis(250));
             })
             .ok();
 

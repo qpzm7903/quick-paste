@@ -1,8 +1,8 @@
 [package]
 name = "quick-paste"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
-description = "快速粘贴：把纯文本备忘录一键粘贴到刚才的输入框"
+description = "QuickPaste：macOS & Windows 双平台全能剪贴板历史与常用片段快贴神器"
 license = "MIT"
 
 [package.metadata.packager]
@@ -10,7 +10,7 @@ product-name = "QuickPaste"
 identifier = "com.g-ai-002.quick-paste"
 publisher = "g-ai-002"
 homepage = "https://github.com/g-ai-002/quick-paste"
-description = "快速粘贴：纯文本备忘录快速粘贴工具"
+description = "QuickPaste：macOS & Windows 双平台剪贴板历史与常用片段快贴神器"
 category = "Utility"
 
 [package.metadata.packager.nsis]
@@ -19,19 +19,55 @@ languages = ["SimpChinese", "English"]
 compression = "lzma"
 
 [dependencies]
+arboard = "3"
 async-channel = "=2.5.0"
 atomic-write-file = "=0.3.1"
+auto-launch = "0.6"
 directories = "=6.0.0"
 global-hotkey = "=0.8.0"
 gpui-kit = "=0.10.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
+notify = "8"
+pinyin = "0.11"
 raw-window-handle = "=0.6.2"
 serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "1"
 serde_yaml = "=0.9.34"
+sha2 = "0.11"
 thiserror = "=2.0.21"
+tray-icon = "0.26"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSArray",
+    "NSGeometry",
+    "NSObjCRuntime",
+    "NSString",
+] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSEvent",
+    "NSPasteboard",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSView",
+    "NSWindow",
+    "NSWorkspace",
+] }
+objc2-core-graphics = { version = "0.3", features = [
+    "CGEvent",
+    "CGEventSource",
+    "CGEventTypes",
+    "CGRemoteOperation",
+] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "=0.62.2", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",

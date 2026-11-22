@@ -1,11 +1,11 @@
-//! 备忘录的 YAML 持久化。
+//! 备忘录 / 常用片段的 YAML 持久化。
 //!
-//! 每条记录包含 `text`、`usage_count`、`is_pinned`、`tags` 四个字段。
+//! 每条记录包含 `text`、`usage_count`、`is_pinned`、`tags` 字段（可选 `title`、`is_custom`）。
 //! `text` / `tags` 以外部编辑的 `memos.yaml` 为准，`usage_count` / `is_pinned`
 //! 由本程序维护；重新加载时优先沿用本地文件里的这两个值。
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::Write as _,
     path::{Path, PathBuf},
@@ -17,13 +17,19 @@ use serde_yaml::Value;
 use thiserror::Error;
 
 const HEADER: &str = "\
-# 快速粘贴 · 备忘录数据
-# text / tags 由外部编辑；usage_count / is_pinned 由本程序维护。
-# 修改后回到程序点击「重新加载」即可生效。
+# 快速粘贴 · 常用片段 / 备忘录数据
+# text / tags 可在外部编辑；usage_count / is_pinned 由本程序维护。
+# 修改后会自动热重载，或点击「重新加载」立即生效。
 ";
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Memo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub text: String,
     #[serde(default)]
     pub usage_count: u64,
@@ -31,6 +37,8 @@ pub struct Memo {
     pub is_pinned: bool,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_custom: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,7 +81,7 @@ pub fn save(path: &Path, memos: &[Memo]) -> Result<(), MemoError> {
 
     let document = MemoDocument { memos };
     let yaml = serde_yaml::to_string(&document)?;
-    let content = format!("{}{}", HEADER, yaml);
+    let content = format!("{HEADER}{yaml}");
 
     let mut file = AtomicWriteFile::open(path)?;
     file.write_all(content.as_bytes())?;
@@ -104,9 +112,7 @@ pub fn parse(content: &str) -> Result<Vec<Memo>, MemoError> {
         Value::Sequence(sequence) => Value::Sequence(sequence),
         Value::Null => Value::Sequence(Vec::new()),
         _ => {
-            return Err(MemoError::Format(
-                "顶层必须是 memos 列表".to_owned(),
-            ));
+            return Err(MemoError::Format("顶层必须是 memos 列表".to_owned()));
         }
     };
 
@@ -128,9 +134,7 @@ fn parse_item(item: Value) -> Result<Memo, MemoError> {
     match item {
         item @ Value::Mapping(_) => serde_yaml::from_value(item)
             .map_err(|error| MemoError::Format(format!("备忘录字段无效：{error}"))),
-        _ => Err(MemoError::Format(
-            "memos 的每一项必须是记录映射".to_owned(),
-        )),
+        _ => Err(MemoError::Format("memos 的每一项必须是记录映射".to_owned())),
     }
 }
 
@@ -139,23 +143,133 @@ pub fn sort_for_display(memos: &mut [Memo]) {
     memos.sort_by_key(|memo| (!memo.is_pinned, std::cmp::Reverse(memo.usage_count)));
 }
 
-/// 以 `source` 的 text / tags 为准，优先沿用 `local` 的 usage_count / is_pinned。
+/// 以 `source` 的 text / tags 为准，优先沿用 `local` 的 usage_count / is_pinned，
+/// 并保留用户在应用内新建的自定义片段（`is_custom == true`）。
 pub fn merge(source: &[Memo], local: &[Memo]) -> Vec<Memo> {
-    source
+    let mut merged: Vec<Memo> = source
         .iter()
         .map(|memo| {
             let state = local.iter().find(|local| local.text == memo.text);
             Memo {
+                title: memo
+                    .title
+                    .clone()
+                    .or_else(|| state.and_then(|s| s.title.clone())),
                 text: memo.text.clone(),
                 usage_count: state.map_or(memo.usage_count, |state| state.usage_count),
                 is_pinned: state.map_or(memo.is_pinned, |state| state.is_pinned),
                 tags: memo.tags.clone(),
+                is_custom: false,
             }
         })
-        .collect()
+        .collect();
+
+    for local_memo in local.iter().filter(|memo| memo.is_custom) {
+        if !merged.iter().any(|item| item.text == local_memo.text) {
+            merged.push(local_memo.clone());
+        }
+    }
+
+    merged
+}
+
+pub fn add_memo(
+    memos: &mut Vec<Memo>,
+    title: Option<String>,
+    text: String,
+    tags: Vec<String>,
+    is_pinned: bool,
+    is_custom: bool,
+) -> Option<usize> {
+    let normalized = normalize_one(Memo {
+        title,
+        text,
+        usage_count: 0,
+        is_pinned,
+        tags,
+        is_custom,
+    })?;
+
+    if let Some(existing) = memos.iter_mut().find(|item| item.text == normalized.text) {
+        existing.title = normalized.title;
+        existing.tags = normalized.tags;
+        existing.is_pinned = normalized.is_pinned;
+        sort_for_display(memos);
+        return memos.iter().position(|item| item.text == normalized.text);
+    }
+
+    memos.push(normalized.clone());
+    sort_for_display(memos);
+    memos.iter().position(|item| item.text == normalized.text)
+}
+
+pub fn update_memo(
+    memos: &mut [Memo],
+    index: usize,
+    title: Option<String>,
+    text: String,
+    tags: Vec<String>,
+    is_pinned: bool,
+) -> bool {
+    let Some(existing) = memos.get(index).cloned() else {
+        return false;
+    };
+    let Some(normalized) = normalize_one(Memo {
+        title,
+        text,
+        usage_count: existing.usage_count,
+        is_pinned,
+        tags,
+        is_custom: existing.is_custom,
+    }) else {
+        return false;
+    };
+    memos[index] = normalized;
+    sort_for_display(memos);
+    true
+}
+
+pub fn delete_memo(memos: &mut Vec<Memo>, index: usize) -> Option<Memo> {
+    if index >= memos.len() {
+        return None;
+    }
+    Some(memos.remove(index))
+}
+
+/// 统计所有标签及出现次数，按频次降序、字典序升序返回。
+pub fn collect_all_tags(memos: &[Memo]) -> Vec<(String, usize)> {
+    let mut counts: HashMap<String, (String, usize)> = HashMap::new();
+    for memo in memos {
+        for tag in &memo.tags {
+            let key = tag.to_lowercase();
+            counts
+                .entry(key)
+                .and_modify(|(_, count)| *count += 1)
+                .or_insert_with(|| (tag.clone(), 1));
+        }
+    }
+    let mut list: Vec<(String, usize)> = counts.into_values().collect();
+    list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    list
+}
+
+/// 解析类似 `工作, 常用 #效率` 的标签输入文本。
+pub fn parse_tags_input(raw: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut tags = Vec::new();
+    for part in raw.split([',', '，', ';', '；', '\n']) {
+        for token in part.split_whitespace() {
+            let clean = token.trim().trim_start_matches('#').trim();
+            if !clean.is_empty() && seen.insert(clean.to_lowercase()) {
+                tags.push(clean.to_owned());
+            }
+        }
+    }
+    tags
 }
 
 /// 按忽略大小写的子串匹配文本或标签，返回原列表中的下标。
+#[allow(dead_code)]
 pub fn matching_indices(memos: &[Memo], query: &str) -> Vec<usize> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
@@ -166,12 +280,16 @@ pub fn matching_indices(memos: &[Memo], query: &str) -> Vec<usize> {
         .iter()
         .enumerate()
         .filter_map(|(index, memo)| {
+            let matches_title = memo
+                .title
+                .as_ref()
+                .is_some_and(|title| title.to_lowercase().contains(&query));
             let matches_text = memo.text.to_lowercase().contains(&query);
             let matches_tag = memo
                 .tags
                 .iter()
                 .any(|tag| tag.to_lowercase().contains(&query));
-            (matches_text || matches_tag).then_some(index)
+            (matches_title || matches_text || matches_tag).then_some(index)
         })
         .collect()
 }
@@ -202,10 +320,15 @@ fn normalize_one(mut memo: Memo) -> Option<Memo> {
         return None;
     }
 
+    memo.title = memo
+        .title
+        .map(|title| title.trim().to_owned())
+        .filter(|title| !title.is_empty());
+
     let mut tags = Vec::with_capacity(memo.tags.len());
     let mut seen = HashSet::new();
     for tag in &memo.tags {
-        let tag = tag.trim();
+        let tag = tag.trim().trim_start_matches('#').trim();
         if !tag.is_empty() && seen.insert(tag.to_lowercase()) {
             tags.push(tag.to_owned());
         }
@@ -242,12 +365,57 @@ pub fn reveal(path: &Path) -> std::io::Result<()> {
     command.spawn().map(|_| ())
 }
 
-#[cfg(not(target_os = "windows"))]
-pub fn reveal(_path: &Path) -> std::io::Result<()> {
-    Ok(())
+#[cfg(target_os = "macos")]
+pub fn reveal(path: &Path) -> std::io::Result<()> {
+    use std::process::Command;
+
+    let mut command = Command::new("open");
+    if path.exists() {
+        if path.is_dir() {
+            command.arg(path);
+        } else {
+            command.arg("-R").arg(path);
+        }
+    } else if let Some(parent) = path.parent() {
+        command.arg(parent);
+    }
+    command.spawn().map(|_| ())
 }
 
-/// 数据目录：`%LOCALAPPDATA%\QuickPaste`。
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub fn reveal(path: &Path) -> std::io::Result<()> {
+    use std::process::Command;
+
+    let target = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+    Command::new("xdg-open").arg(target).spawn().map(|_| ())
+}
+
+/// 在系统默认浏览器中打开 URL。
+pub fn open_url(url: &str) -> std::io::Result<()> {
+    use std::process::Command;
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(url).spawn().map(|_| ())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map(|_| ())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Command::new("xdg-open").arg(url).spawn().map(|_| ())
+    }
+}
+
+/// 数据目录：`%LOCALAPPDATA%\QuickPaste`（Windows）或 `~/Library/Application Support/QuickPaste`（macOS）。
 pub fn data_directory() -> PathBuf {
     directories::BaseDirs::new()
         .map(|dirs| dirs.data_local_dir().to_path_buf())
@@ -261,10 +429,12 @@ mod tests {
 
     fn memo(text: &str, usage_count: u64, is_pinned: bool, tags: &[&str]) -> Memo {
         Memo {
+            title: None,
             text: text.to_owned(),
             usage_count,
             is_pinned,
             tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+            is_custom: false,
         }
     }
 
@@ -378,17 +548,19 @@ memos:
     }
 
     #[test]
-    fn merge_keeps_local_usage_and_pin() {
-        let source = vec![
-            memo("甲", 1, false, &["新标签"]),
-            memo("乙", 2, true, &[]),
-        ];
-        let local = vec![memo("甲", 9, true, &["旧标签"])];
+    fn merge_keeps_local_usage_pin_and_custom_entries() {
+        let source = vec![memo("甲", 1, false, &["新标签"]), memo("乙", 2, true, &[])];
+        let mut custom = memo("应用内新建", 4, true, &["快捷"]);
+        custom.is_custom = true;
+        let local = vec![memo("甲", 9, true, &["旧标签"]), custom];
 
         let merged = merge(&source, &local);
 
+        assert_eq!(merged.len(), 3);
         assert_eq!(merged[0], memo("甲", 9, true, &["新标签"]));
         assert_eq!(merged[1], memo("乙", 2, true, &[]));
+        assert_eq!(merged[2].text, "应用内新建");
+        assert!(merged[2].is_custom);
     }
 
     #[test]
@@ -436,6 +608,44 @@ memos:
         assert_eq!(matching_indices(&memos, "世界"), vec![1]);
         assert_eq!(matching_indices(&memos, "ai"), vec![2]);
         assert_eq!(matching_indices(&memos, "   "), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn crud_and_tag_collection_work() {
+        let mut memos = Vec::new();
+        add_memo(
+            &mut memos,
+            Some("邮箱".to_owned()),
+            "me@example.com".to_owned(),
+            parse_tags_input("工作, #常用"),
+            true,
+            true,
+        );
+        add_memo(
+            &mut memos,
+            None,
+            "cargo test".to_owned(),
+            vec!["开发".to_owned(), "常用".to_owned()],
+            false,
+            true,
+        );
+        assert_eq!(memos.len(), 2);
+        assert_eq!(memos[0].title.as_deref(), Some("邮箱"));
+
+        assert!(update_memo(
+            &mut memos,
+            1,
+            Some("测试命令".to_owned()),
+            "cargo test --all".to_owned(),
+            vec!["开发".to_owned()],
+            false,
+        ));
+        assert_eq!(memos[1].text, "cargo test --all");
+
+        let tags = collect_all_tags(&memos);
+        assert_eq!(tags.len(), 3);
+        assert!(delete_memo(&mut memos, 0).is_some());
+        assert_eq!(memos.len(), 1);
     }
 
     #[test]
