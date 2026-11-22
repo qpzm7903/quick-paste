@@ -4,7 +4,7 @@
 mod imp {
     use std::{
         mem::size_of,
-        sync::{mpsc, Mutex, OnceLock},
+        sync::{Mutex, OnceLock, mpsc},
         thread,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
@@ -80,7 +80,7 @@ mod imp {
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if deadline.take().is_some()
-                        && !crate::paste::is_main_window_visible()
+                        && !crate::platform::is_main_window_visible()
                         && private_working_set_size()
                             .is_some_and(|size| size > PRIVATE_WORKING_SET_LIMIT)
                     {
@@ -127,8 +127,11 @@ mod imp {
 #[cfg(not(target_os = "windows"))]
 mod imp {
     pub(crate) fn schedule_startup_cleanup() {}
+    #[allow(dead_code)]
     pub(crate) fn schedule_hidden_trim() {}
+    #[allow(dead_code)]
     pub(crate) fn cancel_hidden_trim() {}
 }
 
+#[allow(unused_imports)]
 pub(crate) use imp::{cancel_hidden_trim, schedule_hidden_trim, schedule_startup_cleanup};

@@ -1,16 +1,19 @@
-name: 🏗️ 构建 Windows 版本
+name: 🏗️ 构建与发布（macOS & Windows）
 
-run-name: ${{ github.ref_type == 'tag' && '🚀 发布' || '🔨 构建' }} Windows · ${{ github.ref_name }}
+run-name: ${{ github.ref_type == 'tag' && '🚀 发布' || '🔨 构建' }} QuickPaste · ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-build-${{ github.ref }}
-  cancel-in-progress: false
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,24 +24,25 @@ defaults:
     shell: bash
 
 jobs:
-  build:
-    name: 🔨 构建 Windows x64
+  build-windows:
+    name: 🪟 构建 Windows x64
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
-      - name: 📥 检出所选分支或标签
+      - name: 📥 检出代码
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
           persist-credentials: false
 
-      - name: 🦀 安装项目指定的 Rust 工具链
+      - name: 🦀 安装 Rust 1.99.1
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.96.0"
+          toolchain: "1.99.1"
+          components: rustfmt,clippy
           targets: x86_64-pc-windows-msvc
 
-      - name: 🏷️ 校验引用与应用版本
+      - name: 🏷️ 校验应用版本
         run: |
           VERSION="$(cargo metadata --no-deps --format-version 1 | python -c "import json,sys; d=json.load(sys.stdin); print(next((p['version'] for p in d['packages'] if p['name'] == 'quick-paste'), ''))")"
           if [ -z "$VERSION" ]; then
@@ -46,12 +50,12 @@ jobs:
             exit 1
           fi
           if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ] && [ "$GITHUB_REF_NAME" != "$VERSION" ]; then
-            echo "❌ 标签 $GITHUB_REF_NAME 与 Cargo.toml 版本 $VERSION 不一致，请使用 v$VERSION 或 $VERSION" >&2
+            echo "❌ 标签 $GITHUB_REF_NAME 与 Cargo.toml 版本 $VERSION 不一致" >&2
             exit 1
           fi
-          echo "📌 引用类型：$GITHUB_REF_TYPE，引用名称：$GITHUB_REF_NAME，应用版本：$VERSION"
+          echo "📌 版本：$VERSION"
 
-      - name: 🛠️ 初始化 x64 MSVC 编译环境
+      - name: 🛠️ 初始化 MSVC 编译环境
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -61,16 +65,18 @@ jobs:
         with:
           key: windows-x64
 
-      # Git Bash 的 /usr/bin/link 会遮蔽 MSVC 的 link.exe，Cargo 步骤必须用 pwsh。
-      - name: 🧪 运行单元测试
+      - name: 🧪 格式、Clippy 与单元测试
         shell: pwsh
-        run: cargo test --release
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --release
 
       - name: 🔨 构建发布版
         shell: pwsh
         run: cargo build --release
 
-      - name: 🩺 验证发布程序不显示终端
+      - name: 🩺 验证发布程序使用 Windows GUI 子系统
         shell: pwsh
         run: |
           $stream = [System.IO.File]::OpenRead("target/release/quick-paste.exe")
@@ -88,7 +94,6 @@ jobs:
           } finally {
             $stream.Dispose()
           }
-          Write-Host '✅ 已确认发布程序使用 Windows GUI 子系统，不会显示终端窗口'
 
       - name: 📦 安装 cargo-packager
         shell: pwsh
@@ -98,19 +103,7 @@ jobs:
         shell: pwsh
         run: ./scripts/package.ps1 -Arch x64 -PackageType both -SkipBuild
 
-      - name: 🧾 校验 setup 与 portable 产物
-        shell: pwsh
-        run: |
-          $directory = "target/packages/x86_64-pc-windows-msvc"
-          $setup = @(Get-ChildItem -LiteralPath $directory -File -Filter '*-setup.exe')
-          $portable = @(Get-ChildItem -LiteralPath $directory -File -Filter '*-portable.zip')
-          if ($setup.Count -ne 1) { throw "setup 产物数量错误，预期 1 个，实际 $($setup.Count) 个" }
-          if ($portable.Count -ne 1) { throw "portable 产物数量错误，预期 1 个，实际 $($portable.Count) 个" }
-          if ($setup[0].Length -eq 0 -or $portable[0].Length -eq 0) { throw '存在空的打包产物' }
-          Write-Host '📊 待上传产物：'
-          $setup + $portable | ForEach-Object { Write-Host "  - $($_.Name)" }
-
-      - name: ⬆️ 上传构建产物
+      - name: ⬆️ 上传 Windows 产物
         uses: actions/upload-artifact@v4
         with:
           name: quick-paste-windows-x64
@@ -121,86 +114,125 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  build-macos:
+    name: 🍎 构建 macOS (${{ matrix.arch }})
+    runs-on: macos-14
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+            run_tests: true
+          - arch: x64
+            target: x86_64-apple-darwin
+            run_tests: false
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: 🦀 安装 Rust 1.99.1
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
+          components: rustfmt,clippy
+          targets: ${{ matrix.target }}
+
+      - name: 💾 缓存 Cargo 构建
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-${{ matrix.arch }}
+
+      - name: 🧪 格式、Clippy 与单元测试
+        if: matrix.run_tests
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --release
+
+      - name: 🔨 构建发布版 (${{ matrix.target }})
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: 🧰 打包 macOS .app / .dmg / .zip
+        run: ./scripts/package-macos.sh --arch ${{ matrix.arch }} --skip-build
+
+      - name: ⬆️ 上传 macOS 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: quick-paste-macos-${{ matrix.arch }}
+          path: |
+            target/packages/${{ matrix.target }}/*.dmg
+            target/packages/${{ matrix.target }}/*-app.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
   release:
     name: 🚀 发布 GitHub Release
-    needs: build
-    if: github.ref_type == 'tag'
-    runs-on: windows-2022
+    needs: [build-windows, build-macos]
+    if: github.event_name == 'workflow_dispatch' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      # 生成发布说明需要标签与完整提交历史。
-      - name: 📥 检出标签与完整历史
+      - name: 📥 检出完整历史
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: ⬇️ 下载构建产物
+      - name: ⬇️ 下载全平台构建产物
         uses: actions/download-artifact@v4
         with:
-          name: quick-paste-windows-x64
           path: dist
 
-      - name: 🧾 校验发布产物
-        shell: pwsh
+      - name: 🧾 汇总并校验产物
         run: |
-          $assets = @(Get-ChildItem -LiteralPath dist -File)
-          if ($assets.Count -ne 2) { throw "发布产物数量错误，预期 2 个，实际 $($assets.Count) 个" }
-          $setup = @($assets | Where-Object { $_.Name -like '*-setup.exe' })
-          $portable = @($assets | Where-Object { $_.Name -like '*-portable.zip' })
-          if ($setup.Count -ne 1 -or $portable.Count -ne 1) {
-            throw '发布产物必须包含一个 setup.exe 和一个 portable.zip'
-          }
-          foreach ($asset in $assets) {
-            if ($asset.Length -eq 0) { throw "发布产物为空：$($asset.FullName)" }
-          }
-          Write-Host '📊 待发布产物：'
-          $assets | ForEach-Object { Write-Host "  - $($_.Name)" }
+          set -euo pipefail
+          mkdir -p release-assets
+          find dist -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.dmg' \) -exec cp {} release-assets/ \;
+          ls -lh release-assets/
+          count="$(ls -1 release-assets | wc -l | tr -d ' ')"
+          if [ "$count" -ne 6 ]; then
+            echo "❌ 发布产物数量错误，预期 6 个，实际 $count 个" >&2
+            exit 1
+          fi
 
       - name: 📝 生成发布说明
-        shell: bash
         run: |
           set -euo pipefail
           current_tag="$GITHUB_REF_NAME"
           prev_tag="$(git tag --sort=-version:refname | grep -v "^${current_tag}$" | head -n 1 || true)"
           if [ -n "$prev_tag" ]; then
-            echo "📌 上一个标签：$prev_tag"
             git log --pretty=format:'* %s (%h)' "$prev_tag..$current_tag" \
               -- . ':(exclude)docs' ':(exclude).github' ':(exclude).gitea' > release-notes.md
             if [ ! -s release-notes.md ]; then
               echo "本次发布没有需要列出的代码改动。" > release-notes.md
             fi
           else
-            echo "📌 未找到上一个标签，按首次发布处理"
             echo "首次发布。" > release-notes.md
           fi
           printf '\n' >> release-notes.md
-          echo "=== 📝 生成的发布说明 ==="
-          cat release-notes.md
 
-      - name: 🚀 创建并发布 GitHub Release
+      - name: 🚀 创建 GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: pwsh
         run: |
-          $repo = $env:GITHUB_REPOSITORY
-          $tag = $env:GITHUB_REF_NAME
-          $prerelease = ($tag.Split('+')[0].Contains('-')).ToString().ToLowerInvariant()
-          $assets = @(Get-ChildItem -LiteralPath dist -File)
-          if ($assets.Count -ne 2) { throw '发布产物数量不是 2 个' }
-
-          gh release view $tag --repo $repo 2>$null | Out-Null
-          if ($LASTEXITCODE -eq 0) {
-            throw "已存在 Release $tag，拒绝覆盖；如需重新发布请先删除该 Release"
-          }
-
-          gh release create $tag --repo $repo --verify-tag --prerelease=$prerelease --title "$tag" --notes-file release-notes.md
-          if ($LASTEXITCODE -ne 0) { throw "创建 Release 失败，退出码：$LASTEXITCODE" }
-
-          $uploadArgs = @('release', 'upload', $tag, '--repo', $repo) + @($assets.FullName)
-          gh @uploadArgs
-          if ($LASTEXITCODE -ne 0) { throw "上传 Release 产物失败，退出码：$LASTEXITCODE" }
-          Write-Host "✅ 已发布 $tag"
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          tag="$GITHUB_REF_NAME"
+          prerelease="false"
+          if [[ "${tag%%+*}" == *-* ]]; then
+            prerelease="true"
+          fi
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            echo "❌ 已存在 Release $tag，拒绝覆盖" >&2
+            exit 1
+          fi
+          gh release create "$tag" --repo "$repo" --verify-tag --prerelease="$prerelease" --title "$tag" --notes-file release-notes.md release-assets/*
